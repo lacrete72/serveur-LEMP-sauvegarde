@@ -50,42 +50,65 @@ send_discord_message() {
 # Création du répertoire local de sauvegarde s'il n'existe pas
 mkdir -p $LOCAL_BACKUP_DIR
 
+# Fonction pour afficher les messages à la fois sur le terminal et dans le log
+log_message() {
+    echo "$(date) : $1" | tee -a $LOG_FILE
+}
+
+# Activer le mode débogage pour afficher les commandes
+set -x
+
 # Faire un dump de la base de données
-echo "$(date) : Démarrage du dump de la base de données" >> $LOG_FILE
+log_message "Démarrage du dump de la base de données"
 docker compose -f $DOCKER_COMPOSE_PATH/docker-compose.yml exec db mysqldump -u $DB_USER -p$DB_PASSWORD --no-tablespaces $DB_NAME > $LOCAL_BACKUP_DIR/${DB_NAME}_$DATE.sql
 
 if [[ $? -ne 0 ]]; then
-    echo "$(date) : ERREUR - Échec du dump de la base de données" >> $LOG_FILE
+    log_message "ERREUR - Échec du dump de la base de données"
     send_discord_message "Échec du dump de la base de données pour $DB_NAME."
     exit 1
 else
-    echo "$(date) : Dump de la base de données réussi" >> $LOG_FILE
+    log_message "Dump de la base de données réussi"
 fi
 
 # Sauvegarder les fichiers WordPress
-echo "$(date) : Démarrage de la sauvegarde des fichiers WordPress" >> $LOG_FILE
+log_message "Démarrage de la sauvegarde des fichiers WordPress"
 tar czf $LOCAL_BACKUP_DIR/wordpress_files_$DATE.tar.gz -C $WORDPRESS_DIR . 2>> $LOG_FILE
 
 if [[ $? -ne 0 ]]; then
-    echo "$(date) : ERREUR - Échec de la sauvegarde des fichiers WordPress" >> $LOG_FILE
+    log_message "ERREUR - Échec de la sauvegarde des fichiers WordPress"
     send_discord_message "Échec de la sauvegarde des fichiers WordPress."
     exit 1
 else
-    echo "$(date) : Sauvegarde des fichiers WordPress réussie" >> $LOG_FILE
+    log_message "Sauvegarde des fichiers WordPress réussie"
 fi
 
 # Vérification de l'intégrité des fichiers (base de données et archives)
-echo "$(date) : Vérification de l'intégrité des fichiers" >> $LOG_FILE
+log_message "Vérification de l'intégrité des fichiers"
 
-# Utilisation de rsync pour vérifier que les fichiers ont été correctement copiés
-rsync -avz --checksum $LOCAL_BACKUP_DIR/ ${SFTP_USER}@${SFTP_HOST}:$SFTP_PATH/$DATE/ 2>> $LOG_FILE
+# Vérifier si les fichiers existent localement
+if [[ ! -f $LOCAL_BACKUP_DIR/${DB_NAME}_$DATE.sql || ! -f $LOCAL_BACKUP_DIR/wordpress_files_$DATE.tar.gz ]]; then
+    log_message "ERREUR - Les fichiers de sauvegarde sont manquants"
+    send_discord_message "Les fichiers de sauvegarde sont manquants."
+    exit 1
+else
+    log_message "Les fichiers de sauvegarde sont prêts à être envoyés"
+fi
+
+# Transférer les fichiers via SFTP
+log_message "Transfert des fichiers vers le serveur SFTP"
+sftp $SFTP_USER@$SFTP_HOST <<EOF
+mkdir -p $SFTP_PATH/$DATE
+put $LOCAL_BACKUP_DIR/${DB_NAME}_$DATE.sql $SFTP_PATH/$DATE/
+put $LOCAL_BACKUP_DIR/wordpress_files_$DATE.tar.gz $SFTP_PATH/$DATE/
+bye
+EOF
 
 if [[ $? -ne 0 ]]; then
-    echo "$(date) : ERREUR - Problème lors de la copie des fichiers vers le serveur SFTP" >> $LOG_FILE
+    log_message "ERREUR - Problème lors de la copie des fichiers vers le serveur SFTP"
     send_discord_message "Erreur lors de la copie des fichiers de sauvegarde vers le serveur SFTP."
     exit 1
 else
-    echo "$(date) : Sauvegarde envoyée avec succès vers le serveur SFTP" >> $LOG_FILE
+    log_message "Sauvegarde envoyée avec succès vers le serveur SFTP"
 fi
 
 # Nettoyage des fichiers locaux après transfert
@@ -96,7 +119,11 @@ rm -f $LOCAL_BACKUP_DIR/wordpress_files_$DATE.tar.gz
 send_discord_message "La sauvegarde du site WordPress a été effectuée avec succès !"
 
 # Log de fin de processus
-echo "$(date) : Sauvegarde terminée" >> $LOG_FILE
+log_message "Sauvegarde terminée"
+
+# Désactiver le mode débogage
+set +x
+
 
 ```
 
